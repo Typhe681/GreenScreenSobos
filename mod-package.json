@@ -1,0 +1,24 @@
+{
+  "format_version": 1,
+  "id": "greenscreensobos",
+  "name": "GreenScreenSobos",
+  "version": "1.0.0",
+  "game_versions": [
+    "1.3.11"
+  ],
+  "install_layout": "user-data-styles",
+  "payload_root": "greenscreensobos",
+  "entry": "greenScreen.gd",
+  "autoload": "GreenScreenSobos",
+  "bootstrap": "styles/greenscreen_bootstrap.tres",
+  "files": [
+    "greenscreensobos/greenScreen.gd",
+    "styles/greenscreen_bootstrap.tres"
+  ],
+  "author": "Typhe681",
+  "description": {
+    "en": "Replaces the sobo background colors with a media file of your choosing"
+  },
+  "readme": "README.md",
+  "dependencies": []
+}
