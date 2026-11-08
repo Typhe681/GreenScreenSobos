@@ -24,6 +24,7 @@ uniform sampler2D test_texture;
 uniform vec2 image_size;
 uniform vec2 view_center;
 uniform vec2 view_size;
+uniform bool flipped_screen;
 
 varying vec2 world_position;
 
@@ -37,7 +38,13 @@ void fragment() {
 		view_size.y / image_size.y
 	);
 
-	vec2 uv = (world_position - view_center) / (image_size * scale) + vec2(0.5);
+	vec2 sample_position = world_position;
+
+	if (flipped_screen) {
+		sample_position = view_center * 2.0 - sample_position;
+	}
+
+	vec2 uv = (sample_position - view_center) / (image_size * scale) + vec2(0.5);
 
 	COLOR = texture(test_texture, uv);
 }
@@ -166,6 +173,7 @@ func _process(_delta: float) -> void:
 		var mat: ShaderMaterial = patched_sobos[sobo]
 		mat.set_shader_parameter("view_center", view_center)
 		mat.set_shader_parameter("view_size", view_size)
+		mat.set_shader_parameter("flipped_screen", SettingsManager.settings.flipped_screen)
 
 func patch_sobo(
 	sobo: Sobo,
@@ -210,11 +218,7 @@ func update_bumper_alarm(scene: Node) -> void:
 
 func install_audio_toggle() -> void:
 	var model: SoboMenuButtonBool = null
-	for i in 600:
-		model = get_tree().root.find_child("LiveFriendScores", true, false)
-		if model != null and model.is_node_ready():
-			break
-		await get_tree().process_frame
+	model = get_tree().root.find_child("LiveFriendScores", true, false)
 
 	if model == null:
 		push_warning("GreenScreenSobos: LiveFriendScores toggle not found")
@@ -235,9 +239,12 @@ func install_audio_toggle() -> void:
 
 	button.name = "GreenScreenAudio"
 	button.label.text = "video audio"
-	button.tooltip_text = "enable or disable audio from the video"
+	button.tooltip_text = "play audio from the background video"
 	button.release_press.connect(on_audio_toggle_pressed)
 	model.add_sibling(button)
+	var settings_list := model.get_parent() as Control
+	var partial_button_height := button.get_combined_minimum_size().y / 2.5
+	settings_list.position.y += partial_button_height
 	audio_toggle = button
 	audio_toggle.set_value(audio_enabled)
 
