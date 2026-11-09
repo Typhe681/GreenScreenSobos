@@ -6,6 +6,7 @@ Tested on Sobosuba v1.3.11
 
 
 ## Installation:
+Use [Sobosuba Mod Manager](https://github.com/T0y-9n/sobosuba-mods), or do the following:
 
 Extract `greenscreensobos.zip` from the [latest release](https://github.com/Typhe681/GreenScreenSobos/releases/latest) into Sobosuba's userdata folder
 
