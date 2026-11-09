@@ -9,22 +9,33 @@ var video_player: VideoStreamPlayer
 var image_texture: Texture2D
 var shader: Shader
 var is_video := false
+var was_in_game := false
 var patched_sobos: Dictionary = {}
 var original_materials: Dictionary = {}
-var audio_enabled := true
-var audio_toggle: SoboMenuButtonBool
 var bumper_alarms: Array[AudioStreamPlayer2D] = []
 var bumper_alarm_scene: Node
-var was_in_game := false
+
+var green_screen_settings_screen: MenuScreen
+var description_label: Label
+var global_toggle: SoboMenuButtonBool
+var audio_toggle: SoboMenuButtonBool
+var per_sobo_toggle: SoboMenuButtonBool
+var mod_enabled := true
+var audio_enabled := true
+var per_sobo := false
 
 const SHADER_CODE := """
 shader_type canvas_item;
 
-uniform sampler2D test_texture;
+uniform sampler2D sobo_texture;
 uniform vec2 image_size;
 uniform vec2 view_center;
 uniform vec2 view_size;
 uniform bool flipped_screen;
+uniform bool per_sobo = false;
+uniform vec2 sobo_center;
+uniform vec2 sobo_bounds_size;
+uniform float sobo_rotation;
 
 varying vec2 world_position;
 
@@ -33,20 +44,44 @@ void vertex() {
 }
 
 void fragment() {
-	float scale = max(
-		view_size.x / image_size.x,
-		view_size.y / image_size.y
-	);
+	vec2 uv;
 
-	vec2 sample_position = world_position;
+	if (per_sobo) {
+		vec2 local_position = world_position - sobo_center;
 
-	if (flipped_screen) {
-		sample_position = view_center * 2.0 - sample_position;
+		float c = cos(-sobo_rotation);
+		float s = sin(-sobo_rotation);
+		local_position = mat2(vec2(c, -s), vec2(s, c)) * local_position;
+
+		if (flipped_screen) {
+			local_position = -local_position;
+		}
+
+		float scale = max(
+			sobo_bounds_size.x / image_size.x,
+			sobo_bounds_size.y / image_size.y
+		);
+
+		uv = local_position / (image_size * scale) + vec2(0.5);
+	} else {
+		float scale = max(
+			view_size.x / image_size.x,
+			view_size.y / image_size.y
+		);
+
+		vec2 sample_position = world_position;
+
+		if (flipped_screen) {
+			sample_position = view_center * 2.0 - sample_position;
+		}
+
+		uv = (sample_position - view_center) / (image_size * scale) + vec2(0.5);
 	}
 
-	vec2 uv = (sample_position - view_center) / (image_size * scale) + vec2(0.5);
-
-	COLOR = texture(test_texture, uv);
+	if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+		discard;
+	}
+	COLOR = texture(sobo_texture, uv);
 }
 """
 
@@ -55,7 +90,9 @@ func _ready() -> void:
 	process_priority = 100
 	var cf := ConfigFile.new()
 	if cf.load(CFG) == OK:
+		mod_enabled = cf.get_value("greenScreen", "mod_enabled", true)
 		audio_enabled = cf.get_value("greenScreen", "audio_enabled", true)
+		per_sobo = cf.get_value("greenScreen", "per_sobo", false)
 
 	var media_path := find_media()
 	if media_path.is_empty():
@@ -84,8 +121,7 @@ func _ready() -> void:
 	shader = Shader.new()
 	shader.code = SHADER_CODE
 	SignalBus.on_game_mode_start.connect(on_game_mode_start)
-	if is_video:
-		install_audio_toggle()
+	install_green_screen_button()
 
 func find_media() -> String:
 	var dir := DirAccess.open(MEDIA_DIR)
@@ -111,17 +147,40 @@ func find_media() -> String:
 
 func on_game_mode_start(scene: GameScene) -> void:
 	clear_patched_sobos()
-	if is_video:
+	if is_video and mod_enabled:
 		video_player.stop()
 		video_player.play()
 	was_in_game = true
 	update_bumper_alarm(scene)
 
+func get_sobo_local_bounds(sobo: Sobo, rotation: float) -> Dictionary:
+	var points = sobo.get_draw_polygon_points()
+	if points.is_empty():
+		return {"center": sobo.get_visual_center(), "size": Vector2.ZERO}
+
+	var pivot := sobo.get_visual_center()
+	var first: Vector2 = (points[0] - pivot).rotated(-rotation)
+	var min_point := first
+	var max_point := first
+
+	for point: Vector2 in points:
+		var p := (point - pivot).rotated(-rotation)
+		min_point.x = min(min_point.x, p.x)
+		min_point.y = min(min_point.y, p.y)
+		max_point.x = max(max_point.x, p.x)
+		max_point.y = max(max_point.y, p.y)
+
+	var rect := Rect2(min_point, max_point - min_point).grow(15.0) #idk 15 makes it look slightly better
+	return {
+		"center": pivot + rect.get_center().rotated(rotation),
+		"size": rect.size,
+	}
+
 func _process(_delta: float) -> void:
 	var scene = GameModeManager.current_scene
 	var in_game := scene != null
 	if in_game and not was_in_game:
-		if is_video:
+		if is_video and mod_enabled:
 			video_player.stop()
 			video_player.play()
 	elif not in_game and was_in_game:
@@ -131,6 +190,9 @@ func _process(_delta: float) -> void:
 	was_in_game = in_game
 
 	update_bumper_alarm(scene)
+	if not mod_enabled:
+		clear_patched_sobos()
+		return
 
 	if not in_game:
 		return
@@ -171,6 +233,16 @@ func _process(_delta: float) -> void:
 			original_materials.erase(sobo)
 			continue
 		var mat: ShaderMaterial = patched_sobos[sobo]
+		var rotation := 0.0
+		var positions = sobo.get_positions()
+		if not positions.is_empty():
+			var relative: Vector2 = positions[0] - sobo.get_visual_center()
+			rotation = relative.angle()
+		mat.set_shader_parameter("sobo_rotation", rotation)
+		
+		var b := get_sobo_local_bounds(sobo, rotation)
+		mat.set_shader_parameter("sobo_center", b.center)
+		mat.set_shader_parameter("sobo_bounds_size", b.size)
 		mat.set_shader_parameter("view_center", view_center)
 		mat.set_shader_parameter("view_size", view_size)
 		mat.set_shader_parameter("flipped_screen", SettingsManager.settings.flipped_screen)
@@ -186,10 +258,11 @@ func patch_sobo(
 	
 	var mat := ShaderMaterial.new()
 	mat.shader = shader
-	mat.set_shader_parameter("test_texture", media_texture)
+	mat.set_shader_parameter("sobo_texture", media_texture)
 	mat.set_shader_parameter("image_size", image_size)
 	mat.set_shader_parameter("view_center", view_center)
 	mat.set_shader_parameter("view_size", view_size)
+	mat.set_shader_parameter("per_sobo", per_sobo)
 	sobo.set_material(mat)
 	patched_sobos[sobo] = mat
 
@@ -216,47 +289,154 @@ func update_bumper_alarm(scene: Node) -> void:
 		if is_instance_valid(alarm):
 			alarm.volume_db = -80.0
 
-func install_audio_toggle() -> void:
-	var model: SoboMenuButtonBool = null
-	model = get_tree().root.find_child("LiveFriendScores", true, false)
+func on_currently_hovered_changed(new: SoboButton, _old: SoboButton) -> void:
+	if new:
+		description_label.text = tr(new.tooltip_text)
+	else:
+		description_label.text = ""
 
-	if model == null:
-		push_warning("GreenScreenSobos: LiveFriendScores toggle not found")
-		return
+func on_settings_screen_open() -> void:
+	if not Ui._0.on_currently_hovered_changed.is_connected(on_currently_hovered_changed):
+		Ui._0.on_currently_hovered_changed.connect(on_currently_hovered_changed)
+	on_currently_hovered_changed(SoboButton.currently_hovered, null)
 
-	var button: SoboMenuButtonBool = model.duplicate(
-		Node.DUPLICATE_GROUPS |
-		Node.DUPLICATE_SCRIPTS |
-		Node.DUPLICATE_USE_INSTANTIATION
-	)
+func on_settings_screen_close() -> void:
+	if Ui._0.on_currently_hovered_changed.is_connected(on_currently_hovered_changed):
+		Ui._0.on_currently_hovered_changed.disconnect(on_currently_hovered_changed)
+	
+func on_global_toggle_pressed() -> void:
+	mod_enabled = not mod_enabled
 
-	for prop: Dictionary in model.get_property_list():
-		if prop.usage & PROPERTY_USAGE_SCRIPT_VARIABLE and prop.usage & PROPERTY_USAGE_STORAGE:
-			button.set(
-				prop.name,
-				value_for_copy(model.get(prop.name), model, button)
-			)
+	var cf := ConfigFile.new()
+	cf.set_value("greenScreen", "mod_enabled", mod_enabled)
+	cf.save(CFG)
 
-	button.name = "GreenScreenAudio"
-	button.label.text = "video audio"
-	button.tooltip_text = "play audio from the background video"
-	button.release_press.connect(on_audio_toggle_pressed)
-	model.add_sibling(button)
-	var settings_list := model.get_parent() as Control
-	var partial_button_height := button.get_combined_minimum_size().y / 2.5
-	settings_list.position.y += partial_button_height
-	audio_toggle = button
-	audio_toggle.set_value(audio_enabled)
+	if is_video:
+		if mod_enabled:
+			video_player.play()
+		else:
+			video_player.stop()
 
+	refresh_controls()
+	
 func on_audio_toggle_pressed() -> void:
 	audio_enabled = not audio_enabled
-	audio_toggle.set_value(audio_enabled)
-	if video_player != null:
-		video_player.volume_db = 0.0 if audio_enabled else -80.0
 
 	var cf := ConfigFile.new()
 	cf.set_value("greenScreen", "audio_enabled", audio_enabled)
 	cf.save(CFG)
+
+	if video_player != null:
+		video_player.volume_db = 0.0 if audio_enabled else -80.0
+
+	refresh_controls()
+
+func on_per_sobo_toggle_pressed() -> void:
+	per_sobo = not per_sobo
+	for mat: ShaderMaterial in patched_sobos.values():
+		mat.set_shader_parameter("per_sobo", per_sobo)
+
+	var cf := ConfigFile.new()
+	cf.set_value("greenScreen", "per_sobo", per_sobo)
+	cf.save(CFG)
+
+	refresh_controls()
+
+func install_green_screen_button() -> void:
+	var menu := Menu._0
+
+	green_screen_settings_screen = MenuScreen.new()
+	green_screen_settings_screen.name = "GreenScreenSettingsScreen"
+	green_screen_settings_screen.side_title_text = "greenscreen"
+	green_screen_settings_screen.parent_screen = menu.settings_screen
+	green_screen_settings_screen.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	menu.add_child(green_screen_settings_screen)
+	green_screen_settings_screen.hide()
+	menu.register_screen("green_screen_settings_screen", green_screen_settings_screen)
+
+	var controls := VBoxContainer.new()
+	controls.custom_minimum_size = Vector2(512, 0)
+	controls.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	controls.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	controls.grow_vertical = Control.GROW_DIRECTION_BOTH
+	controls.alignment = BoxContainer.ALIGNMENT_CENTER
+	green_screen_settings_screen.add_child(controls)
+
+	var button_scene := load("res://ui/button/bool/sobo_menu_button_bool.tscn") as PackedScene
+
+	global_toggle = button_scene.instantiate() as SoboMenuButtonBool
+	global_toggle.name = "Enable"
+	global_toggle.tooltip_text = "enabled/disable the shader effects"
+	global_toggle.label.text = "enable mod"
+	controls.add_child(global_toggle)
+	global_toggle.release_press.connect(on_global_toggle_pressed)
+
+	audio_toggle = button_scene.instantiate() as SoboMenuButtonBool
+	audio_toggle.name = "Audio"
+	audio_toggle.tooltip_text = "play audio from the background video"
+	audio_toggle.label.text = "video audio"
+	controls.add_child(audio_toggle)
+	audio_toggle.release_press.connect(on_audio_toggle_pressed)
+
+	per_sobo_toggle = button_scene.instantiate() as SoboMenuButtonBool
+	per_sobo_toggle.name = "PerSobo"
+	per_sobo_toggle.tooltip_text = "display the media file on every individual sobo"
+	per_sobo_toggle.label.text = "per sobo greenscreen"
+	controls.add_child(per_sobo_toggle)
+	per_sobo_toggle.release_press.connect(on_per_sobo_toggle_pressed)
+
+	controls.add_child(HSeparator.new())
+
+	description_label = Label.new()
+	description_label.set_script(load("res://ui/styled_label.gd"))
+	description_label.custom_minimum_size = Vector2(512, 128)
+	description_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	description_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	description_label.theme = load("res://ui/theme.tres")
+	controls.add_child(description_label)
+
+	green_screen_settings_screen.first_button_hovered = global_toggle
+	
+	refresh_controls()
+	
+	green_screen_settings_screen.visibility_changed.connect(func():
+		if green_screen_settings_screen.visible:
+			on_settings_screen_open()
+		else:
+			on_settings_screen_close()
+	)
+	
+	var model: SoboMenuButton = menu.settings_screen.find_child("Input", true, false)
+
+	if model == null:
+		push_warning("GreenScreenSobos: Input settings button not found")
+		return
+
+	var button := model.duplicate(
+		Node.DUPLICATE_GROUPS | Node.DUPLICATE_SCRIPTS
+	) as SoboMenuButton
+
+	button.name = "GreenScreenSettings"
+	button.label.text = "green screen"
+	button.tooltip_text = "Configure GreenScreenSobos."
+
+	button.release_press.connect(func():
+		menu.change_screen(green_screen_settings_screen)
+	)
+
+	model.add_sibling(button)
+
+	var settings_list := model.get_parent() as Control
+	var partial_button_height := button.get_combined_minimum_size().y / 2.5
+	settings_list.position.y += partial_button_height
+
+func refresh_controls() -> void:
+	if is_instance_valid(global_toggle):
+		global_toggle.set_value(mod_enabled)
+	if is_instance_valid(audio_toggle):
+		audio_toggle.set_value(audio_enabled)
+	if is_instance_valid(per_sobo_toggle):
+		per_sobo_toggle.set_value(per_sobo)
 
 func value_for_copy(value: Variant, original: Node, copy: Node) -> Variant:
 	if value is Node:
