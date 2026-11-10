@@ -48,20 +48,25 @@ void fragment() {
 
 	if (per_sobo) {
 		vec2 local_position = world_position - sobo_center;
-
-		float c = cos(-sobo_rotation);
-		float s = sin(-sobo_rotation);
-		local_position = mat2(vec2(c, -s), vec2(s, c)) * local_position;
-
+	
 		if (flipped_screen) {
 			local_position = -local_position;
 		}
-
-		float scale = max(
-			sobo_bounds_size.x / image_size.x,
-			sobo_bounds_size.y / image_size.y
+	
+		float c = cos(-sobo_rotation);
+		float s = sin(-sobo_rotation);
+		local_position = mat2(vec2(c, -s), vec2(s, c)) * local_position;
+	
+		vec2 rotated_bounds = vec2(
+			abs(c) * sobo_bounds_size.x + abs(s) * sobo_bounds_size.y,
+			abs(s) * sobo_bounds_size.x + abs(c) * sobo_bounds_size.y
 		);
-
+	
+		float scale = max(
+			rotated_bounds.x / image_size.x,
+			rotated_bounds.y / image_size.y
+		);
+	
 		uv = local_position / (image_size * scale) + vec2(0.5);
 	} else {
 		float scale = max(
@@ -85,43 +90,76 @@ void fragment() {
 }
 """
 
-
 func _ready() -> void:
 	process_priority = 100
+	process_mode = Node.PROCESS_MODE_ALWAYS
+
 	var cf := ConfigFile.new()
 	if cf.load(CFG) == OK:
 		mod_enabled = cf.get_value("greenScreen", "mod_enabled", true)
 		audio_enabled = cf.get_value("greenScreen", "audio_enabled", true)
 		per_sobo = cf.get_value("greenScreen", "per_sobo", false)
 
+	install_green_screen_button()
+	load_media()
+
+func load_media() -> void:
+	clear_patched_sobos()
+
+	if is_instance_valid(video_player):
+		video_player.queue_free()
+	video_player = null
+	image_texture = null
+	is_video = false
+
+	DirAccess.make_dir_recursive_absolute(
+		ProjectSettings.globalize_path(MEDIA_DIR)
+	)
+
 	var media_path := find_media()
 	if media_path.is_empty():
-		push_error("GreenScreenSobos: No supported media found in " + MEDIA_DIR)
+		push_warning("GreenScreenSobos: No supported media found in " + MEDIA_DIR)
 		return
 
 	var extension := media_path.get_extension().to_lower()
 	is_video = extension in VIDEO_EXTENSIONS
+
 	if is_video:
+		var stream := load(media_path) as VideoStream
+		if stream == null:
+			is_video = false
+			push_error("GreenScreenSobos: Failed to load video: " + media_path)
+			return
+
 		video_player = VideoStreamPlayer.new()
-		video_player.stream = load(media_path) as VideoStream
+		video_player.stream = stream
 		video_player.loop = true
 		video_player.autoplay = false
 		video_player.expand = true
+		video_player.process_mode = Node.PROCESS_MODE_ALWAYS
 		video_player.volume_db = 0.0 if audio_enabled else -80.0
 		add_child(video_player)
-		if video_player.stream == null:
-			push_error("GreenScreenSobos: Failed to load video: " + media_path)
-			return
+
+		if mod_enabled and was_in_game:
+			video_player.play()
 	else:
 		var image := Image.load_from_file(media_path)
 		if image == null or image.is_empty():
 			push_error("GreenScreenSobos: Failed to load image: " + media_path)
 			return
 		image_texture = ImageTexture.create_from_image(image)
-	shader = Shader.new()
-	shader.code = SHADER_CODE
-	SignalBus.on_game_mode_start.connect(on_game_mode_start)
-	install_green_screen_button()
+
+	if shader == null:
+		shader = Shader.new()
+		shader.code = SHADER_CODE
+		
+func refresh_media() -> void:
+	load_media()
+	if is_video and is_instance_valid(video_player):
+		video_player.paused = false
+		await RenderingServer.frame_post_draw
+		video_player.paused = true
+	_process(0.0)
 
 func find_media() -> String:
 	var dir := DirAccess.open(MEDIA_DIR)
@@ -145,35 +183,23 @@ func find_media() -> String:
 		return ""
 	return files.pick_random() # lets go gambling!!
 
-func on_game_mode_start(scene: GameScene) -> void:
-	clear_patched_sobos()
-	if is_video and mod_enabled:
-		video_player.stop()
-		video_player.play()
-	was_in_game = true
-	update_bumper_alarm(scene)
-
-func get_sobo_local_bounds(sobo: Sobo, rotation: float) -> Dictionary:
+func get_sobo_local_bounds(sobo: Sobo) -> Dictionary:
 	var points = sobo.get_draw_polygon_points()
 	if points.is_empty():
 		return {"center": sobo.get_visual_center(), "size": Vector2.ZERO}
 
-	var pivot := sobo.get_visual_center()
-	var first: Vector2 = (points[0] - pivot).rotated(-rotation)
-	var min_point := first
-	var max_point := first
+	var min_point: Vector2 = points[0]
+	var max_point: Vector2 = points[0]
 
 	for point: Vector2 in points:
-		var p := (point - pivot).rotated(-rotation)
-		min_point.x = min(min_point.x, p.x)
-		min_point.y = min(min_point.y, p.y)
-		max_point.x = max(max_point.x, p.x)
-		max_point.y = max(max_point.y, p.y)
+		min_point = min_point.min(point)
+		max_point = max_point.max(point)
 
-	var rect := Rect2(min_point, max_point - min_point).grow(15.0) #idk 15 makes it look slightly better
+	var rect := Rect2(min_point, max_point - min_point).grow(10.0)
+
 	return {
-		"center": pivot + rect.get_center().rotated(rotation),
-		"size": rect.size,
+		"center": rect.get_center(),
+		"size": rect.size
 	}
 
 func _process(_delta: float) -> void:
@@ -188,7 +214,10 @@ func _process(_delta: float) -> void:
 			video_player.stop()
 		clear_patched_sobos()
 	was_in_game = in_game
-
+	
+	if is_video and is_instance_valid(video_player):
+		video_player.paused = get_tree().paused
+		
 	update_bumper_alarm(scene)
 	if not mod_enabled:
 		clear_patched_sobos()
@@ -240,7 +269,7 @@ func _process(_delta: float) -> void:
 			rotation = relative.angle()
 		mat.set_shader_parameter("sobo_rotation", rotation)
 		
-		var b := get_sobo_local_bounds(sobo, rotation)
+		var b := get_sobo_local_bounds(sobo)
 		mat.set_shader_parameter("sobo_center", b.center)
 		mat.set_shader_parameter("sobo_bounds_size", b.size)
 		mat.set_shader_parameter("view_center", view_center)
@@ -283,10 +312,13 @@ func update_bumper_alarm(scene: Node) -> void:
 
 	if bumper_alarms.is_empty():
 		for node in scene.find_children("AlarmSound", "AudioStreamPlayer2D", true, false):
-			bumper_alarms.append(node as AudioStreamPlayer2D)
+			var alarm := node as AudioStreamPlayer2D
+			bumper_alarms.append(alarm)
 
+	var mute := mod_enabled and is_video and audio_enabled
+	
 	for alarm in bumper_alarms:
-		if is_instance_valid(alarm):
+		if is_instance_valid(alarm) and mute:
 			alarm.volume_db = -80.0
 
 func on_currently_hovered_changed(new: SoboButton, _old: SoboButton) -> void:
@@ -342,6 +374,15 @@ func on_per_sobo_toggle_pressed() -> void:
 
 	refresh_controls()
 
+func open_media_folder() -> void:
+	DirAccess.make_dir_recursive_absolute(
+		ProjectSettings.globalize_path(MEDIA_DIR)
+	)
+	OS.shell_show_in_file_manager(
+		ProjectSettings.globalize_path(MEDIA_DIR),
+		true
+	)
+
 func install_green_screen_button() -> void:
 	var menu := Menu._0
 
@@ -361,12 +402,47 @@ func install_green_screen_button() -> void:
 	controls.grow_vertical = Control.GROW_DIRECTION_BOTH
 	controls.alignment = BoxContainer.ALIGNMENT_CENTER
 	green_screen_settings_screen.add_child(controls)
+	var model: SoboMenuButton = menu.settings_screen.find_child("Input", true, false)
+
+	if model == null:
+		push_warning("GreenScreenSobos: Input settings button not found")
+		return
+
+	var folder_button := model.duplicate(
+		Node.DUPLICATE_GROUPS | Node.DUPLICATE_SCRIPTS
+	) as SoboMenuButton
+
+	folder_button.name = "OpenFolder"
+	folder_button.tooltip_text = "opens the folder where you place png/jpg/ogv files for the mod to use"
+	folder_button.label.text = "open media folder"
+
+	controls.add_child(folder_button)
+	folder_button.release_press.connect(open_media_folder)
+	
+	var refresh_button := model.duplicate(
+		Node.DUPLICATE_GROUPS | Node.DUPLICATE_SCRIPTS
+	) as SoboMenuButton
+	
+	refresh_button.name = "RefreshMedia"
+	refresh_button.tooltip_text = "randomly selects a file from the folder again"
+	refresh_button.label.text = "refresh media"
+	
+	controls.add_child(refresh_button)
+	refresh_button.release_press.connect(refresh_media)
+
+	var folder_gap := Control.new()
+	folder_gap.custom_minimum_size.y = 16
+	controls.add_child(folder_gap)
 
 	var button_scene := load("res://ui/button/bool/sobo_menu_button_bool.tscn") as PackedScene
 
+	if button_scene == null:
+		push_error("GreenScreenSobos: Could not load toggle button scene")
+		return
+
 	global_toggle = button_scene.instantiate() as SoboMenuButtonBool
 	global_toggle.name = "Enable"
-	global_toggle.tooltip_text = "enabled/disable the shader effects"
+	global_toggle.tooltip_text = "enable/disable the shader effects"
 	global_toggle.label.text = "enable mod"
 	controls.add_child(global_toggle)
 	global_toggle.release_press.connect(on_global_toggle_pressed)
@@ -395,7 +471,7 @@ func install_green_screen_button() -> void:
 	description_label.theme = load("res://ui/theme.tres")
 	controls.add_child(description_label)
 
-	green_screen_settings_screen.first_button_hovered = global_toggle
+	green_screen_settings_screen.first_button_hovered = folder_button
 	
 	refresh_controls()
 	
@@ -405,12 +481,6 @@ func install_green_screen_button() -> void:
 		else:
 			on_settings_screen_close()
 	)
-	
-	var model: SoboMenuButton = menu.settings_screen.find_child("Input", true, false)
-
-	if model == null:
-		push_warning("GreenScreenSobos: Input settings button not found")
-		return
 
 	var button := model.duplicate(
 		Node.DUPLICATE_GROUPS | Node.DUPLICATE_SCRIPTS
@@ -437,18 +507,3 @@ func refresh_controls() -> void:
 		audio_toggle.set_value(audio_enabled)
 	if is_instance_valid(per_sobo_toggle):
 		per_sobo_toggle.set_value(per_sobo)
-
-func value_for_copy(value: Variant, original: Node, copy: Node) -> Variant:
-	if value is Node:
-		if value == original:
-			return copy
-		if original.is_ancestor_of(value):
-			return copy.get_node_or_null(original.get_path_to(value))
-		return value
-
-	if value is Array:
-		var mapped: Array = value.duplicate()
-		for i in mapped.size():
-			mapped[i] = value_for_copy(mapped[i], original, copy)
-		return mapped
-	return value
