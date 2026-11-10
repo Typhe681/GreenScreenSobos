@@ -1,4 +1,8 @@
 # GreenScreenSobos
+
+sobosuba by keepee. This mod requires the original game.
+https://store.steampowered.com/app/1946560/sobosuba
+
 A Sobosuba mod that replaces the sobo background colors with a media file.
 It uses shaders to create a sort of chroma key effect.
 

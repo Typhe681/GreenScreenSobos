@@ -15,6 +15,10 @@
     "greenscreensobos/greenScreen.gd",
     "styles/greenscreen_bootstrap.tres"
   ],
+  "game_credit": {
+    "text": "sobosuba by keepee",
+    "store_url": "https://store.steampowered.com/app/1946560/sobosuba"
+  },
   "author": "Typhe681",
   "description": {
     "en": "Replaces the sobo background colors with a media file of your choosing"
