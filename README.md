@@ -1,5 +1,5 @@
 # GreenScreenSobos
-A Sobosuba mod that replaces the sobo background colors with a media file.
+A [Sobosuba](https://store.steampowered.com/app/1946560/sobosuba) mod that replaces the sobo background colors with a media file.
 It uses shaders to create a sort of chroma key effect.
 
 Tested on Sobosuba v1.3.11
