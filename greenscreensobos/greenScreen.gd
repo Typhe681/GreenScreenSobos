@@ -15,11 +15,7 @@ var original_materials: Dictionary = {}
 var bumper_alarms: Array[AudioStreamPlayer2D] = []
 var bumper_alarm_scene: Node
 
-var green_screen_settings_screen: MenuScreen
-var description_label: Label
-var global_toggle: SoboMenuButtonBool
-var audio_toggle: SoboMenuButtonBool
-var per_sobo_toggle: SoboMenuButtonBool
+var broadcaster_connected := false
 var mod_enabled := true
 var audio_enabled := true
 var per_sobo := false
@@ -94,14 +90,104 @@ func _ready() -> void:
 	process_priority = 100
 	process_mode = Node.PROCESS_MODE_ALWAYS
 
-	var cf := ConfigFile.new()
-	if cf.load(CFG) == OK:
-		mod_enabled = cf.get_value("greenScreen", "mod_enabled", true)
-		audio_enabled = cf.get_value("greenScreen", "audio_enabled", true)
-		per_sobo = cf.get_value("greenScreen", "per_sobo", false)
-
-	install_green_screen_button()
+	load_config()
+	try_connect_broadcaster()
 	load_media()
+
+
+func load_config() -> void:
+	var cf := ConfigFile.new()
+	cf.load(CFG)
+
+	mod_enabled = cf.get_value("mod_enabled", "value",
+		cf.get_value("greenScreen", "mod_enabled", true))
+	audio_enabled = cf.get_value("audio_enabled", "value",
+		cf.get_value("greenScreen", "audio_enabled", true))
+	per_sobo = cf.get_value("per_sobo", "value",
+		cf.get_value("greenScreen", "per_sobo", false))
+
+	write_config()
+
+func write_config() -> void:
+	var cf := ConfigFile.new()
+
+	cf.set_value("meta", "name", "GreenScreenSobos")
+	cf.set_value("meta", "description", "Configure GreenScreenSobos")
+
+	cf.set_value("open_folder", "type", "action")
+	cf.set_value("open_folder", "label", "open media folder")
+	cf.set_value("open_folder", "description", "opens the folder where you place png/jpg/ogv files for the mod to use")
+
+	cf.set_value("refresh_media", "type", "action")
+	cf.set_value("refresh_media", "label", "refresh media")
+	cf.set_value("refresh_media", "description", "randomly selects a file from the folder again")
+
+	cf.set_value("mod_enabled", "type", "bool")
+	cf.set_value("mod_enabled", "label", "enable mod")
+	cf.set_value("mod_enabled", "description", "enable/disable the shader effects")
+	cf.set_value("mod_enabled", "value", mod_enabled)
+
+	cf.set_value("audio_enabled", "type", "bool")
+	cf.set_value("audio_enabled", "label", "video audio")
+	cf.set_value("audio_enabled", "description", "play audio from the background video")
+	cf.set_value("audio_enabled", "value", audio_enabled)
+
+	cf.set_value("per_sobo", "type", "bool")
+	cf.set_value("per_sobo", "label", "per sobo greenscreen")
+	cf.set_value("per_sobo", "description", "display the media file on every individual sobo")
+	cf.set_value("per_sobo", "value", per_sobo)
+
+	cf.save(CFG)
+
+func try_connect_broadcaster() -> void:
+	if broadcaster_connected:
+		return
+	var broadcaster = get_tree().root.get_meta("modsettings_broadcaster", null)
+	if broadcaster:
+		broadcaster.config_changed.connect(on_config_changed)
+		if broadcaster.has_signal("action_triggered"):
+			broadcaster.action_triggered.connect(on_action_triggered)
+		broadcaster_connected = true
+
+func on_config_changed(path: String, section: String, value: Variant) -> void:
+	if path.get_file() != CFG.get_file():
+		return
+
+	match section:
+		"mod_enabled":
+			mod_enabled = value
+			if is_video and is_instance_valid(video_player):
+				if mod_enabled:
+					video_player.play()
+				else:
+					video_player.stop()
+		"audio_enabled":
+			audio_enabled = value
+			if is_instance_valid(video_player):
+				video_player.volume_db = 0.0 if audio_enabled else -80.0
+		"per_sobo":
+			per_sobo = value
+			for mat: ShaderMaterial in patched_sobos.values():
+				mat.set_shader_parameter("per_sobo", per_sobo)
+
+func on_action_triggered(path: String, section: String) -> void:
+	if path.get_file() != CFG.get_file():
+		return
+
+	match section:
+		"open_folder":
+			open_media_folder()
+		"refresh_media":
+			refresh_media()
+
+func open_media_folder() -> void:
+	DirAccess.make_dir_recursive_absolute(
+		ProjectSettings.globalize_path(MEDIA_DIR)
+	)
+	OS.shell_show_in_file_manager(
+		ProjectSettings.globalize_path(MEDIA_DIR),
+		true
+	)
 
 func load_media() -> void:
 	clear_patched_sobos()
@@ -152,7 +238,7 @@ func load_media() -> void:
 	if shader == null:
 		shader = Shader.new()
 		shader.code = SHADER_CODE
-		
+
 func refresh_media() -> void:
 	load_media()
 	if is_video and is_instance_valid(video_player):
@@ -203,14 +289,16 @@ func get_sobo_local_bounds(sobo: Sobo) -> Dictionary:
 	}
 
 func _process(_delta: float) -> void:
+	try_connect_broadcaster()
+
 	var scene = GameModeManager.current_scene
 	var in_game := scene != null
 	if in_game and not was_in_game:
-		if is_video and mod_enabled:
+		if is_video and mod_enabled and is_instance_valid(video_player):
 			video_player.stop()
 			video_player.play()
 	elif not in_game and was_in_game:
-		if is_video:
+		if is_video and is_instance_valid(video_player):
 			video_player.stop()
 		clear_patched_sobos()
 	was_in_game = in_game
@@ -232,7 +320,7 @@ func _process(_delta: float) -> void:
 	var media_texture: Texture2D
 
 	if is_video:
-		if not video_player.is_playing():
+		if not is_instance_valid(video_player) or not video_player.is_playing():
 			return
 		media_texture = video_player.get_video_texture()
 	else:
@@ -320,190 +408,3 @@ func update_bumper_alarm(scene: Node) -> void:
 	for alarm in bumper_alarms:
 		if is_instance_valid(alarm) and mute:
 			alarm.volume_db = -80.0
-
-func on_currently_hovered_changed(new: SoboButton, _old: SoboButton) -> void:
-	if new:
-		description_label.text = tr(new.tooltip_text)
-	else:
-		description_label.text = ""
-
-func on_settings_screen_open() -> void:
-	if not Ui._0.on_currently_hovered_changed.is_connected(on_currently_hovered_changed):
-		Ui._0.on_currently_hovered_changed.connect(on_currently_hovered_changed)
-	on_currently_hovered_changed(SoboButton.currently_hovered, null)
-
-func on_settings_screen_close() -> void:
-	if Ui._0.on_currently_hovered_changed.is_connected(on_currently_hovered_changed):
-		Ui._0.on_currently_hovered_changed.disconnect(on_currently_hovered_changed)
-	
-func on_global_toggle_pressed() -> void:
-	mod_enabled = not mod_enabled
-
-	var cf := ConfigFile.new()
-	cf.set_value("greenScreen", "mod_enabled", mod_enabled)
-	cf.save(CFG)
-
-	if is_video:
-		if mod_enabled:
-			video_player.play()
-		else:
-			video_player.stop()
-
-	refresh_controls()
-	
-func on_audio_toggle_pressed() -> void:
-	audio_enabled = not audio_enabled
-
-	var cf := ConfigFile.new()
-	cf.set_value("greenScreen", "audio_enabled", audio_enabled)
-	cf.save(CFG)
-
-	if video_player != null:
-		video_player.volume_db = 0.0 if audio_enabled else -80.0
-
-	refresh_controls()
-
-func on_per_sobo_toggle_pressed() -> void:
-	per_sobo = not per_sobo
-	for mat: ShaderMaterial in patched_sobos.values():
-		mat.set_shader_parameter("per_sobo", per_sobo)
-
-	var cf := ConfigFile.new()
-	cf.set_value("greenScreen", "per_sobo", per_sobo)
-	cf.save(CFG)
-
-	refresh_controls()
-
-func open_media_folder() -> void:
-	DirAccess.make_dir_recursive_absolute(
-		ProjectSettings.globalize_path(MEDIA_DIR)
-	)
-	OS.shell_show_in_file_manager(
-		ProjectSettings.globalize_path(MEDIA_DIR),
-		true
-	)
-
-func install_green_screen_button() -> void:
-	var menu := Menu._0
-
-	green_screen_settings_screen = MenuScreen.new()
-	green_screen_settings_screen.name = "GreenScreenSettingsScreen"
-	green_screen_settings_screen.side_title_text = "greenscreen"
-	green_screen_settings_screen.parent_screen = menu.settings_screen
-	green_screen_settings_screen.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	menu.add_child(green_screen_settings_screen)
-	green_screen_settings_screen.hide()
-	menu.register_screen("green_screen_settings_screen", green_screen_settings_screen)
-
-	var controls := VBoxContainer.new()
-	controls.custom_minimum_size = Vector2(512, 0)
-	controls.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
-	controls.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	controls.grow_vertical = Control.GROW_DIRECTION_BOTH
-	controls.alignment = BoxContainer.ALIGNMENT_CENTER
-	green_screen_settings_screen.add_child(controls)
-	var model: SoboMenuButton = menu.settings_screen.find_child("Input", true, false)
-
-	if model == null:
-		push_warning("GreenScreenSobos: Input settings button not found")
-		return
-
-	var folder_button := model.duplicate(
-		Node.DUPLICATE_GROUPS | Node.DUPLICATE_SCRIPTS
-	) as SoboMenuButton
-
-	folder_button.name = "OpenFolder"
-	folder_button.tooltip_text = "opens the folder where you place png/jpg/ogv files for the mod to use"
-	folder_button.label.text = "open media folder"
-
-	controls.add_child(folder_button)
-	folder_button.release_press.connect(open_media_folder)
-	
-	var refresh_button := model.duplicate(
-		Node.DUPLICATE_GROUPS | Node.DUPLICATE_SCRIPTS
-	) as SoboMenuButton
-	
-	refresh_button.name = "RefreshMedia"
-	refresh_button.tooltip_text = "randomly selects a file from the folder again"
-	refresh_button.label.text = "refresh media"
-	
-	controls.add_child(refresh_button)
-	refresh_button.release_press.connect(refresh_media)
-
-	var folder_gap := Control.new()
-	folder_gap.custom_minimum_size.y = 16
-	controls.add_child(folder_gap)
-
-	var button_scene := load("res://ui/button/bool/sobo_menu_button_bool.tscn") as PackedScene
-
-	if button_scene == null:
-		push_error("GreenScreenSobos: Could not load toggle button scene")
-		return
-
-	global_toggle = button_scene.instantiate() as SoboMenuButtonBool
-	global_toggle.name = "Enable"
-	global_toggle.tooltip_text = "enable/disable the shader effects"
-	global_toggle.label.text = "enable mod"
-	controls.add_child(global_toggle)
-	global_toggle.release_press.connect(on_global_toggle_pressed)
-
-	audio_toggle = button_scene.instantiate() as SoboMenuButtonBool
-	audio_toggle.name = "Audio"
-	audio_toggle.tooltip_text = "play audio from the background video"
-	audio_toggle.label.text = "video audio"
-	controls.add_child(audio_toggle)
-	audio_toggle.release_press.connect(on_audio_toggle_pressed)
-
-	per_sobo_toggle = button_scene.instantiate() as SoboMenuButtonBool
-	per_sobo_toggle.name = "PerSobo"
-	per_sobo_toggle.tooltip_text = "display the media file on every individual sobo"
-	per_sobo_toggle.label.text = "per sobo greenscreen"
-	controls.add_child(per_sobo_toggle)
-	per_sobo_toggle.release_press.connect(on_per_sobo_toggle_pressed)
-
-	controls.add_child(HSeparator.new())
-
-	description_label = Label.new()
-	description_label.set_script(load("res://ui/styled_label.gd"))
-	description_label.custom_minimum_size = Vector2(512, 128)
-	description_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	description_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	description_label.theme = load("res://ui/theme.tres")
-	controls.add_child(description_label)
-
-	green_screen_settings_screen.first_button_hovered = folder_button
-	
-	refresh_controls()
-	
-	green_screen_settings_screen.visibility_changed.connect(func():
-		if green_screen_settings_screen.visible:
-			on_settings_screen_open()
-		else:
-			on_settings_screen_close()
-	)
-
-	var button := model.duplicate(
-		Node.DUPLICATE_GROUPS | Node.DUPLICATE_SCRIPTS
-	) as SoboMenuButton
-
-	button.name = "GreenScreenSettings"
-	button.label.text = "green screen"
-	button.tooltip_text = "Configure GreenScreenSobos."
-
-	button.release_press.connect(func():
-		menu.change_screen(green_screen_settings_screen)
-	)
-
-	model.add_sibling(button)
-
-	var settings_list := model.get_parent() as Control
-	var partial_button_height := button.get_combined_minimum_size().y / 2.5
-	settings_list.position.y += partial_button_height
-
-func refresh_controls() -> void:
-	if is_instance_valid(global_toggle):
-		global_toggle.set_value(mod_enabled)
-	if is_instance_valid(audio_toggle):
-		audio_toggle.set_value(audio_enabled)
-	if is_instance_valid(per_sobo_toggle):
-		per_sobo_toggle.set_value(per_sobo)
