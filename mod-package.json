@@ -23,8 +23,8 @@
   "dependencies": [
     {
       "id": "modsettings",
-      "version": "1.1.0",
-      "sha256": "ee3e39f3c3bf0484773ed1d143fbfb314b06843c19ba14d7f7584b0537bb86e4"
+      "version": "1.1.1",
+      "sha256": "69bedb1a2edb02391dc7f449fca2b69bbe8905d8f594f620d9bbadbba141b287"
     }
   ]
 }
