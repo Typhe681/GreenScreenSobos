@@ -4,6 +4,8 @@ It uses shaders to create a sort of chroma key effect.
 
 Tested on Sobosuba v1.3.11
 
+Optional dependency: [SoboModSettings](https://github.com/Typhe681/SoboModSettings)
+
 
 ## Installation:
 Use [Sobosuba Mod Manager](https://github.com/T0y-9n/sobosuba-mods), or do the following:
