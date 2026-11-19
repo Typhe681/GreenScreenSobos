@@ -292,6 +292,12 @@ func _process(_delta: float) -> void:
 	try_connect_broadcaster()
 
 	var scene = GameModeManager.current_scene
+	if scene is SceneSuika:
+		clear_patched_sobos()
+		if is_video and is_instance_valid(video_player):
+			video_player.stop()
+		return
+
 	var in_game := scene != null
 	if in_game and not was_in_game:
 		if is_video and mod_enabled and is_instance_valid(video_player):
