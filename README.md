@@ -2,7 +2,7 @@
 A [Sobosuba](https://store.steampowered.com/app/1946560/sobosuba) mod that replaces the sobo background colors with a media file.
 It uses shaders to create a sort of chroma key effect.
 
-Tested on Sobosuba v1.3.11
+Tested on Sobosuba v1.3.11 and v1.3.17
 
 Optional dependency: [SoboModSettings](https://github.com/Typhe681/SoboModSettings)
 
