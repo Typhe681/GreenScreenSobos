@@ -26,7 +26,7 @@ It should look like this:
 ```
 
 
-## Additional Files:
+## Media Files:
 Within the greenscreensobos folder, you can place media files that you wish for the mod to use (there is a button in settings to easily open it).
 
 If multiple files are placed in the folder, it will randomly choose one.
