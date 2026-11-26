@@ -31,6 +31,8 @@ Within the greenscreensobos folder, you can place media files that you wish for 
 
 If multiple files are placed in the folder, it will randomly choose one.
 
+If per-size mode is enabled, it will use numerically named images (not videos). All sizes are supported, just name them `16.png`, `3.jpg`, etc. Images named this way are skipped if per-size mode is disabled.
+
 ### Supported file types:
 - .png
 - .jpg
